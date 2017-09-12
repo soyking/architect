@@ -45,21 +45,17 @@ class Partition(BasePartition):
                         {variables}
                     END IF;
 
-                    IF NOT EXISTS(
-                        SELECT 1 FROM information_schema.tables WHERE table_name=tablename)
-                    THEN
-                        BEGIN
-                            EXECUTE 'CREATE TABLE ' || tablename || ' (
-                                CHECK (' || checks || '),
-                                LIKE "{{parent_table}}" INCLUDING DEFAULTS INCLUDING CONSTRAINTS INCLUDING INDEXES
-                            ) INHERITS ("{{parent_table}}");';
-                        EXCEPTION WHEN duplicate_table THEN
-                            -- pass
-                        END;
-                    END IF;
+                    BEGIN
+                        EXECUTE 'CREATE TABLE IF NOT EXISTS ' || tablename || ' (
+                            CHECK (' || checks || '),
+                            LIKE "{{parent_table}}" INCLUDING DEFAULTS INCLUDING CONSTRAINTS INCLUDING INDEXES
+                        ) INHERITS ("{{parent_table}}");';
+                    EXCEPTION WHEN duplicate_table THEN
+                        -- pass
+                    END;
 
                     EXECUTE 'INSERT INTO ' || tablename || ' VALUES (($1).*);' USING NEW;
-                    RETURN NEW;
+                    RETURN NULL;
                 END;
             $$ LANGUAGE plpgsql;
 
@@ -77,32 +73,7 @@ class Partition(BasePartition):
                     FOR EACH ROW EXECUTE PROCEDURE {{parent_table}}_insert_child();
             END IF;
             END $$;
-
-            -- Then we create a function to delete duplicate row from the master table after insert
-            CREATE OR REPLACE FUNCTION {{parent_table}}_delete_master()
-            RETURNS TRIGGER AS $$
-                BEGIN
-                    DELETE FROM ONLY "{{parent_table}}" WHERE {{pk}};
-                    RETURN NEW;
-                END;
-            $$ LANGUAGE plpgsql;
-
-            -- Lastly we create the after insert trigger that calls the after insert function
-            DO $$
-            BEGIN
-            IF NOT EXISTS(
-                SELECT 1
-                FROM information_schema.triggers
-                WHERE event_object_table = '{{parent_table}}'
-                AND trigger_name = 'after_insert_{{parent_table}}_trigger'
-            ) THEN
-                CREATE TRIGGER after_insert_{{parent_table}}_trigger
-                    AFTER INSERT ON "{{parent_table}}"
-                    FOR EACH ROW EXECUTE PROCEDURE {{parent_table}}_delete_master();
-            END IF;
-            END $$;
         """.format(**definitions).format(
-            pk=' AND '.join('{pk} = NEW.{pk}'.format(pk=pk) for pk in self.pks),
             parent_table=self.table,
             column='"{0}"'.format(self.column_name)
         ))
